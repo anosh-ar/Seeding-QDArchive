@@ -22,6 +22,7 @@ REPOSITORY_ID = 18
 REPOSITORY_URL = "https://dataverse.harvard.edu/"
 DOWNLOAD_REPOSITORY_FOLDER = "harvard-dataverse"
 DOWNLOAD_METHOD = "API-CALL"
+KEYWORDS_CSV = os.path.join(os.path.dirname(__file__), "search_keywords.csv")
 SKIP_EXTS = {
     "mp4",
     "m4v",
@@ -55,6 +56,7 @@ SKIP_EXTS = {
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA foreign_keys = ON")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS PROJECTS (
@@ -73,6 +75,40 @@ def init_db():
             download_repository_folder TEXT,
             download_project_folder TEXT UNIQUE,
             download_method TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS PERSON_ROLE (
+            id INTEGER PRIMARY KEY,
+            project_id INTEGER UNIQUE,
+            name TEXT,
+            role TEXT,
+            FOREIGN KEY (project_id) REFERENCES PROJECTS(id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS LICENSES (
+            id INTEGER PRIMARY KEY,
+            project_id INTEGER UNIQUE,
+            license TEXT,
+            FOREIGN KEY (project_id) REFERENCES PROJECTS(id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS FILES (
+            id INTEGER PRIMARY KEY,
+            project_id INTEGER,
+            file_name TEXT,
+            file_type TEXT,
+            status TEXT CHECK(status IN ('SUCCEEDED','FAILED','SKIPPED')),
+            UNIQUE(project_id, file_name),
+            FOREIGN KEY (project_id) REFERENCES PROJECTS(id)
         )
         """
     )
@@ -126,33 +162,42 @@ def insert_project(conn, row):
         ),
     )
     conn.commit()
+    cur = conn.execute(
+        "SELECT id FROM PROJECTS WHERE download_project_folder = ?",
+        (row.get("download_project_folder"),),
+    )
+    res = cur.fetchone()
+    return res[0] if res else None
 
 
-def process_item(session, conn, item, allowed_exts, seen_datasets, failed_projects):
-    """Handle a single search result; download the whole dataset if an allowed file is found."""
-    name = item.get("name")
-    dataset_name = item.get("dataset_name")
-    dataset_persistent_id = item.get("dataset_persistent_id")
-    restricted = item.get("restricted", False)
-    ext = os.path.splitext(name or "")[1].lower().lstrip(".")
-    query_string = ext
+def insert_person_role(conn, project_id, name, role):
+    conn.execute(
+        "INSERT OR IGNORE INTO PERSON_ROLE (project_id, name, role) VALUES (?, ?, ?)",
+        (project_id, name, role),
+    )
+    conn.commit()
 
-    print("\nFound file:")
-    print(f"  File name: {name}")
-    print(f"  Dataset:   {dataset_name}")
-    print(f"  DOI:       {dataset_persistent_id}")
-    print(f"  extension: {ext or '[none]'}")
 
-    if restricted:
-        print("  -> Skipping download (restricted=True).")
-        return 0
+def insert_license(conn, project_id, license_name):
+    conn.execute(
+        "INSERT OR IGNORE INTO LICENSES (project_id, license) VALUES (?, ?)",
+        (project_id, license_name),
+    )
+    conn.commit()
 
-    if ext not in allowed_exts:
-        print(f"  -> Skipping: extension .{ext} not in allowed set {allowed_exts}.")
-        return 0
 
+def insert_files(conn, project_id, file_rows):
+    if not project_id or not file_rows:
+        return
+    conn.executemany(
+        "INSERT OR IGNORE INTO FILES (project_id, file_name, file_type, status) VALUES (?, ?, ?, ?)",
+        [(project_id, r["file_name"], r["file_type"], r["status"]) for r in file_rows],
+    )
+    conn.commit()
+
+
+def download_dataset(session, conn, dataset_persistent_id, query_string, seen_datasets, failed_projects):
     if not dataset_persistent_id:
-        print("  -> Skipping: no dataset_persistent_id; can't expand dataset.")
         return 0
 
     if dataset_persistent_id in seen_datasets:
@@ -192,42 +237,55 @@ def process_item(session, conn, item, allowed_exts, seen_datasets, failed_projec
 
     files = (data.get("latestVersion") or {}).get("files") or []
     downloaded = 0
+    file_rows = []
     for entry in files:
-        if entry.get("restricted"):
-            continue
+        status = "SKIPPED"
         data_file = entry.get("dataFile") or {}
         f_id = data_file.get("id")
         f_name = data_file.get("filename") or entry.get("label")
-        if not f_id or not f_name:
+        if not f_name:
             continue
 
         f_ext = os.path.splitext(f_name)[1].lower().lstrip(".")
-        if f_ext in SKIP_EXTS:
-            continue
 
-        dest_path = os.path.join(dataset_dir, f_name)
-        if os.path.exists(dest_path):
-            continue
+        if entry.get("restricted"):
+            status = "SKIPPED"
+        elif f_ext in SKIP_EXTS:
+            status = "SKIPPED"
+        elif not f_id:
+            status = "FAILED"
+        else:
+            dest_path = os.path.join(dataset_dir, f_name)
+            if os.path.exists(dest_path):
+                status = "SKIPPED"
+            else:
+                download_url = f"{dataset_base_url}/api/access/datafile/{f_id}"
+                print(f"  -> Downloading {f_name} ...")
+                try:
+                    with session.get(download_url, stream=False, timeout=120) as r:
+                        if not r.ok:
+                            try:
+                                err_payload = r.json()
+                            except Exception:
+                                err_payload = r.text
+                            print(f"     Download error {r.status_code}: {err_payload}")
+                            status = "FAILED"
+                        else:
+                            r.raise_for_status()
+                            with open(dest_path, "wb") as f:
+                                f.write(r.content)
+                            status = "SUCCEEDED"
+                except OSError as e:
+                    print(f"     Save failed for {f_name}: {e}")
+                    status = "FAILED"
+                except Exception as e:
+                    print(f"     Download failed for {f_name}: {e}")
+                    status = "FAILED"
 
-        download_url = f"{dataset_base_url}/api/access/datafile/{f_id}"
-        print(f"  -> Downloading {f_name} ...")
-        try:
-            with session.get(download_url, stream=False, timeout=120) as r:
-                if not r.ok:
-                    try:
-                        err_payload = r.json()
-                    except Exception:
-                        err_payload = r.text
-                    print(f"     Download error {r.status_code}: {err_payload}")
-                    continue
-                r.raise_for_status()
-                with open(dest_path, "wb") as f:
-                    f.write(r.content)
+        if status == "SUCCEEDED":
             downloaded += 1
-        except OSError as e:
-            print(f"     Save failed for {f_name}: {e}")
-        except Exception as e:
-            print(f"     Download failed for {f_name}: {e}")
+
+        file_rows.append({"file_name": f_name, "file_type": f_ext, "status": status})
 
     meta = data.get("latestVersion") or {}
     dataset_persistent = meta.get("datasetPersistentId") or dataset_persistent_id
@@ -240,7 +298,7 @@ def process_item(session, conn, item, allowed_exts, seen_datasets, failed_projec
         first = ds_desc[0] or {}
         description = ((first.get("dsDescriptionValue") or {}).get("value")) or None
 
-    insert_project(
+    project_id = insert_project(
         conn,
         {
             "query_string": query_string,
@@ -255,11 +313,61 @@ def process_item(session, conn, item, allowed_exts, seen_datasets, failed_projec
         },
     )
 
+    author = _citation_field_value(metadata_blocks, "author")
+    author_name = None
+    if isinstance(author, list) and author:
+        author_name = ((author[0] or {}).get("authorName") or {}).get("value")
+
+    if project_id:
+        insert_person_role(conn, project_id, author_name, "Author" if author_name else "UNKNOWN")
+        insert_license(conn, project_id, (meta.get("license") or {}).get("name"))
+        insert_files(conn, project_id, file_rows)
+
     seen_datasets.add(dataset_persistent_id)
 
     if downloaded:
         print(f"     Saved {downloaded} file(s) to {dataset_dir}")
     return downloaded
+
+
+def process_item(session, conn, item, allowed_exts, seen_datasets, failed_projects):
+    """Handle a single file search result; download the whole dataset."""
+    name = item.get("name")
+    dataset_name = item.get("dataset_name")
+    dataset_persistent_id = item.get("dataset_persistent_id")
+    restricted = item.get("restricted", False)
+    query_string = item.get("_query_string")
+
+    print("\nFound file:")
+    print(f"  File name: {name}")
+    print(f"  Dataset:   {dataset_name}")
+    print(f"  DOI:       {dataset_persistent_id}")
+
+    if restricted:
+        print("  -> Skipping download (restricted=True).")
+        return 0
+
+    if not dataset_persistent_id:
+        print("  -> Skipping: no dataset_persistent_id; can't expand dataset.")
+        return 0
+
+    return download_dataset(session, conn, dataset_persistent_id, query_string, seen_datasets, failed_projects)
+
+
+def load_keyword_phrases():
+    phrases = []
+    try:
+        with open(KEYWORDS_CSV, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                q = (row.get("query") or "").strip()
+                if q:
+                    phrases.append(q)
+    except FileNotFoundError:
+        return []
+    except OSError:
+        return []
+    return phrases
 
 
 def main():
@@ -294,54 +402,123 @@ def main():
         session.headers.update({"X-Dataverse-key": API_TOKEN})
 
     # Build a targeted fileType query: fileType:.ext1 OR fileType:.ext2 ...
-    query_terms = [f"fileType:.{ext}" for ext in sorted(allowed_exts)]
-    search_query = " OR ".join(query_terms)
-
-    print(f"Searching for files with extensions {sorted(allowed_exts)} on Harvard Dataverse...")
-
-    start = 0
-    per_page = 50
     total_processed = 0
     seen_datasets = set()
     failed_projects = []
+    per_page = 50
 
-    while True:
-        params = {
-            "q": search_query,
-            "type": "file",
-            "per_page": per_page,
-            "start": start,
-        }
+    print(f"Searching for files with extensions {sorted(allowed_exts)} on Harvard Dataverse...")
+    for ext in sorted(allowed_exts):
+        search_query = f"fileType:.{ext}"
+        print(f"\nExtension query: {search_query}")
+        start = 0
+        while True:
+            params = {
+                "q": search_query,
+                "type": "file",
+                "per_page": per_page,
+                "start": start,
+            }
 
-        resp = session.get(SEARCH_ENDPOINT, params=params, timeout=30)
-        resp.raise_for_status()
-        payload = resp.json()
-        #print(payload)
-        if payload.get("status") != "OK":
-            print("Search API returned status:", payload.get("status"))
-            break
+            resp = session.get(SEARCH_ENDPOINT, params=params, timeout=30)
+            resp.raise_for_status()
+            payload = resp.json()
+            if payload.get("status") != "OK":
+                print("Search API returned status:", payload.get("status"))
+                break
 
-        data = payload.get("data", {})
-        items = data.get("items", [])
-        total_count = data.get("total_count", 0)
+            data = payload.get("data", {})
+            items = data.get("items", [])
+            total_count = data.get("total_count", 0)
 
-        if not items:
-            break
+            if not items:
+                break
 
-        for item in items:
-            total_processed += process_item(session, conn, item, allowed_exts, seen_datasets, failed_projects)
+            for item in items:
+                item["_query_string"] = search_query
+                total_processed += process_item(session, conn, item, allowed_exts, seen_datasets, failed_projects)
 
-        start += per_page
-        if start >= total_count:
-            break
+            start += per_page
+            if start >= total_count:
+                break
 
-        time.sleep(0.5)  # be polite – small pause
+            time.sleep(0.5)  # be polite – small pause
 
-    print(f"\nDone. Downloaded {total_processed} file(s).")
+    print(f"\nExtension phase done. Downloaded {total_processed} file(s).")
+
+    # Keyword phase: search datasets by exact phrases and download whole datasets.
+    phrases = load_keyword_phrases()
+    if phrases:
+        print("\nKeyword phase: searching datasets by phrases from search_keywords.csv ...")
+        total_keyword_upper_bound = 0
+        for phrase in phrases:
+            q = '"' + phrase.replace('"', '\\"') + '"'
+            try:
+                resp = session.get(
+                    SEARCH_ENDPOINT,
+                    params={"q": q, "type": "dataset", "per_page": 1, "start": 0},
+                    timeout=30,
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+                total_keyword_upper_bound += (
+                    (payload.get("data") or {}).get("total_count", 0) if payload.get("status") == "OK" else 0
+                )
+            except Exception:
+                pass
+        print(f"Keyword phase: will process up to {total_keyword_upper_bound} dataset(s).")
+
+        for phrase in phrases:
+            keyword_query = '"' + phrase.replace('"', '\\"') + '"'
+            print(f"\nKeyword query: {keyword_query}")
+            start = 0
+            while True:
+                params = {
+                    "q": keyword_query,
+                    "type": "dataset",
+                    "per_page": per_page,
+                    "start": start,
+                }
+                resp = session.get(SEARCH_ENDPOINT, params=params, timeout=30)
+                resp.raise_for_status()
+                payload = resp.json()
+                if payload.get("status") != "OK":
+                    break
+
+                data = payload.get("data", {})
+                items = data.get("items", [])
+                total_count = data.get("total_count", 0)
+                if not items:
+                    break
+
+                for item in items:
+                    dataset_persistent_id = (
+                        item.get("dataset_persistent_id")
+                        or item.get("global_id")
+                        or item.get("globalId")
+                        or item.get("persistentId")
+                    )
+                    if dataset_persistent_id:
+                        total_processed += download_dataset(
+                            session,
+                            conn,
+                            dataset_persistent_id,
+                            keyword_query,
+                            seen_datasets,
+                            failed_projects,
+                        )
+
+                start += per_page
+                if start >= total_count:
+                    break
+                time.sleep(0.5)
+
     if failed_projects:
         print("\nFailed projects (DOI persistentId):")
         for doi in failed_projects:
             print(f"  {doi}")
+
+    print(f"\nAll phases done. Downloaded {total_processed} file(s).")
     conn.close()
 
 
