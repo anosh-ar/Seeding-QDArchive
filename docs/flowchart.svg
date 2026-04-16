@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720">
+  <defs>
+    <style>
+      .box { fill: #ffffff; stroke: #1f2937; stroke-width: 2; }
+      .title { font: 700 22px/1.2 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; fill: #111827; }
+      .text { font: 16px/1.2 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; fill: #111827; }
+      .muted { font: 14px/1.2 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; fill: #374151; }
+      .arrow { stroke: #111827; stroke-width: 2.5; fill: none; marker-end: url(#arrowhead); }
+      .pill { fill: #eef2ff; stroke: #4338ca; stroke-width: 2; }
+      .out { fill: #ecfeff; stroke: #0e7490; stroke-width: 2; }
+    </style>
+    <marker id="arrowhead" markerWidth="12" markerHeight="8" refX="10" refY="4" orient="auto">
+      <polygon points="0,0 12,4 0,8" fill="#111827"/>
+    </marker>
+  </defs>
+
+  <text x="60" y="70" class="title">Seeding-QDArchive — code structure &amp; data flow</text>
+  <text x="60" y="98" class="muted">Runner → scrapers → remote APIs → local files + SQLite metadata</text>
+
+  <!-- Runner -->
+  <rect x="70" y="150" width="360" height="90" rx="12" class="pill"/>
+  <text x="95" y="185" class="text">run_all_scrapers.py</text>
+  <text x="95" y="212" class="muted">Runs Scraper.py then IHSNScraper.py</text>
+
+  <!-- Scraper boxes -->
+  <rect x="70" y="290" width="360" height="115" rx="12" class="box"/>
+  <text x="95" y="325" class="text">src/Scraper.py</text>
+  <text x="95" y="352" class="muted">Dataverse: extension search + exact</text>
+  <text x="95" y="372" class="muted">keyword dataset search</text>
+
+  <rect x="70" y="440" width="360" height="115" rx="12" class="box"/>
+  <text x="95" y="475" class="text">src/IHSNScraper.py</text>
+  <text x="95" y="502" class="muted">IHSN: keyword catalog search</text>
+  <text x="95" y="522" class="muted">+ throttled downloads</text>
+
+  <!-- Inputs -->
+  <rect x="480" y="290" width="330" height="145" rx="12" class="box"/>
+  <text x="505" y="325" class="text">Inputs (local)</text>
+  <text x="505" y="355" class="muted">src/QDA_files_extensions.csv</text>
+  <text x="505" y="379" class="muted">src/search_keywords.csv</text>
+  <text x="505" y="403" class="muted">src/.env (optional token)</text>
+
+  <!-- Remote APIs -->
+  <rect x="860" y="290" width="280" height="145" rx="12" class="box"/>
+  <text x="885" y="325" class="text">Remote sources</text>
+  <text x="885" y="355" class="muted">Harvard/Murray Dataverse APIs</text>
+  <text x="885" y="379" class="muted">Fallback Dataverse instances</text>
+  <text x="885" y="403" class="muted">IHSN catalog APIs</text>
+
+  <!-- Outputs -->
+  <rect x="480" y="470" width="660" height="120" rx="12" class="out"/>
+  <text x="505" y="505" class="text">Outputs (local)</text>
+  <text x="505" y="535" class="muted">Downloaded_Files/harvard-murray-archive/…</text>
+  <text x="505" y="559" class="muted">Downloaded_Files/IHSN/…</text>
+  <text x="505" y="583" class="muted">src/metadata.sqlite (PROJECTS, FILES, PERSON_ROLE, LICENSES, KEYWORDS)</text>
+
+  <!-- Arrows -->
+  <path d="M250 240 L250 290" class="arrow"/>
+  <path d="M250 405 L250 440" class="arrow"/>
+
+  <path d="M430 335 L480 335" class="arrow"/>
+  <path d="M430 485 L480 405" class="arrow"/>
+
+  <path d="M810 362 L860 362" class="arrow"/>
+  <path d="M430 347 L860 347" class="arrow" opacity="0.25"/>
+  <path d="M430 497 L860 397" class="arrow" opacity="0.25"/>
+
+  <path d="M330 405 L480 470" class="arrow"/>
+  <path d="M330 555 L480 530" class="arrow"/>
+</svg>
+
