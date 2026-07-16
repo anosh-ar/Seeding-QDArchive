@@ -2,6 +2,8 @@ Downloaded_Files/
 src/.env
 report.docx
 23220843-seeding_old.db
+23220843-seeding_backup*.db
+.claude/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

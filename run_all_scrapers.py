@@ -5,8 +5,8 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent
 SCRIPTS = (
-    ROOT_DIR / "src" / "Scraper.py",
-    ROOT_DIR / "src" / "IHSNScraper.py",
+    ROOT_DIR / "src" / "dataverse_scraper.py",
+    ROOT_DIR / "src" / "ihsn_scraper.py",
 )
 
 
